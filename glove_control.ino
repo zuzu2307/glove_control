@@ -5,45 +5,70 @@
 #define PINKY_PIN 25
 
 int fingerValue[] = {0, 0, 0, 0, 0};
+int minVal[] = {4095, 4095, 4095, 4095, 4095}; // initial high values for calibration
+int maxVal[] = {0, 0, 0, 0, 0};                // initial low values for calibration
+float smoothedValue[] = {0, 0, 0, 0, 0};
+float alpha = 0.1;  // Smoothing factor
+char spliter[] = ",";
+
+bool inCalibrationMode = true;
+unsigned long calibrationStartTime;
+const int calibrationDuration = 5000;  // 5 seconds for calibration
 
 void setup() {
   Serial.begin(9600);
-  // analogReadResolution(12);
+  calibrationStartTime = millis();
+  pinMode(LED_BUILTIN, OUTPUT);
 }
 
 void loop() {
-  // thumbValue = analogRead(flexPin1);
-  // indexValue = analogRead(flexPin2);
+  if (inCalibrationMode) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    Serial.println("CALIBRATION_START");
+    if (millis() - calibrationStartTime < calibrationDuration) {
+      calibrateSensors();
+    } else {
+      inCalibrationMode = false;
+      Serial.println("CALIBRATION_END");
+    }
+  } else {
+    // Normal mode: read and smooth data, then map to normalized range for VR
+    digitalWrite(LED_BUILTIN, LOW);
+    readAndSendFingerData();
+  }
+}
 
-  // Serial.print("Thumb:");
-  // Serial.print(thumbValue);
-  // Serial.print(",");
-  // Serial.print("Index:");
-  // Serial.println(indexValue);
+void calibrateSensors() {
+  // Read each flex sensor and update min/max values for calibration
+  for (int i = 0; i < 5; i++) {
+    int sensorValue = analogRead(getPin(i));
+    if (sensorValue < minVal[i]) minVal[i] = sensorValue;
+    if (sensorValue > maxVal[i]) maxVal[i] = sensorValue;
+  }
+}
 
-  // get all of our variables of interest
-  float t = millis()/1000.0;
-  fingerValue[0] = analogRead(THUMB_PIN);
-  fingerValue[1] = analogRead(INDEX_PIN);
-  fingerValue[2] = analogRead(MID_PIN);
-  fingerValue[3] = analogRead(RING_PIN);
-  fingerValue[4] = analogRead(PINKY_PIN);
+void readAndSendFingerData() {
+  for (int i = 0; i < 5; i++) {
+    int rawValue = analogRead(getPin(i));
+    int calibratedValue = map(rawValue, minVal[i], maxVal[i], 0, 100);  // Map to 0-100%
+    smoothedValue[i] = alpha * calibratedValue + (1 - alpha) * smoothedValue[i];
+  }
 
-  // write them all to console with tabs in between them
-  Serial.print(t);         
-  Serial.print("\t");
-  Serial.print(fingerValue[0]);   
-  Serial.print("\t");      
-  Serial.print(fingerValue[1]); 
-  Serial.print("\t");      
-  Serial.print(fingerValue[2]); 
-  Serial.print("\t");      
-  Serial.print(fingerValue[3]); 
-  Serial.print("\t");      
-  Serial.println(fingerValue[4]); 
-  
-  // For example, at 2.5 seconds, this prints out like so, where \t
-  // is the tab character, and \n is the newline character
-  // 2500\t0.598\t-0.801\t\n
+  // Send formatted data like LucidGloves
+  Serial.print(smoothedValue[0]); Serial.print(spliter);
+  Serial.print(smoothedValue[1]); Serial.print(spliter);
+  Serial.print(smoothedValue[2]); Serial.print(spliter);
+  Serial.print(smoothedValue[3]); Serial.print(spliter);
+  Serial.println(smoothedValue[4]);
+}
 
+int getPin(int finger) {
+  switch (finger) {
+    case 0: return THUMB_PIN;
+    case 1: return INDEX_PIN;
+    case 2: return MID_PIN;
+    case 3: return RING_PIN;
+    case 4: return PINKY_PIN;
+  }
+  return -1;
 }
