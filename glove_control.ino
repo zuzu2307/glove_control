@@ -16,7 +16,7 @@ unsigned long calibrationStartTime;
 const int calibrationDuration = 5000;  // 5 seconds for calibration
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   calibrationStartTime = millis();
   pinMode(LED_BUILTIN, OUTPUT);
 }
