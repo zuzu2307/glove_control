@@ -1,5 +1,6 @@
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 
 #define THUMB_PIN 34
 #define INDEX_PIN 35
@@ -7,12 +8,18 @@
 #define RING_PIN 33
 #define PINKY_PIN 25
 
+#define THUMB_OUT 26
+#define INDEX_OUT 27
+#define MID_OUT 14
+#define RING_OUT 12
+#define PINKY_OUT 13
+
 Adafruit_MPU6050 mpu;  // Create MPU6050 object
 
-int fingerValue[] = {0, 0, 0, 0, 0};
-int minVal[] = {4095, 4095, 4095, 4095, 4095}; // initial high values for calibration
-int maxVal[] = {0, 0, 0, 0, 0};                // initial low values for calibration
-float smoothedValue[] = {0, 0, 0, 0, 0};
+int fingerValue[] = { 0, 0, 0, 0, 0 };
+int minVal[] = { 4095, 4095, 4095, 4095, 4095 };  // initial high values for calibration
+int maxVal[] = { 0, 0, 0, 0, 0 };                 // initial low values for calibration
+float smoothedValue[] = { 0, 0, 0, 0, 0 };
 float alpha = 0.1;  // Smoothing factor
 char spliter[] = ",";
 
@@ -20,26 +27,26 @@ bool inCalibrationMode = true;
 unsigned long calibrationStartTime;
 const int calibrationDuration = 5000;  // 5 seconds for calibration
 
-float prevAccelX = 0, prevAccelY = 0, prevAccelZ = 0;
-float deltaX = 0, deltaY = 0, deltaZ = 0;
-const float GRAVITY = 9.8;
+float pitch = 0, roll = 0, yaw = 0;
+unsigned long lastTime = 0;
+const float alphaRotation = 0.98;
+const float yawScale = 50;
 
-// Rotation angles (X, Y, Z in degrees)
-float prevAngleX = 0, prevAngleY = 0, prevAngleZ = 0;
-float deltaAngleX = 0, deltaAngleY = 0, deltaAngleZ = 0;
-float angleX = 0, angleY = 0, angleZ = 0;
-const float DEG_PER_S = 180.0 / 3.14159;  // Conversion from radians to degrees
-const float alphaR = 0.98;  // Complementary filter coefficient (close to 1)
-
-unsigned long prevMillis = 0;
+int hapticFeedback = 0;
 
 
 void setup() {
+
+  for (int i = 0; i < 5; i++) {
+    pinMode(getOutPin(i), OUTPUT);
+  }
+
   Serial.begin(115200);
-  Wire.begin();  // Initialize I2C
+  Wire.begin();        // Initialize I2C
   if (!mpu.begin()) {  // Initialize the MPU6050 sensor
     Serial.println("Couldn't find the MPU6050 sensor!");
-    while (1);
+    while (1)
+      ;
   }
 
   mpu.setAccelerometerRange(MPU6050_RANGE_2_G);  // Set accelerometer range
@@ -77,7 +84,7 @@ void calibrateSensors() {
 
 float smooth(float input) {
   static float smoothedValue = 0;
-  float alpha = 0.1; // Smoothing factor (0.1 = smooth, 1 = no smoothing)
+  float alpha = 0.1;  // Smoothing factor (0.1 = smooth, 1 = no smoothing)
   smoothedValue = (alpha * input) + ((1 - alpha) * smoothedValue);
   return smoothedValue;
 }
@@ -94,76 +101,70 @@ void readAndSendSensorData() {
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  // Store the current accelerometer values
-  float accelX = a.acceleration.x;
-  float accelY = a.acceleration.y;
-  float accelZ = a.acceleration.z;
+  // Time step
+  unsigned long currentTime = millis();
+  float dt = (currentTime - lastTime) / 1000.0;
+  lastTime = currentTime;
 
-  // Remove the gravitational component (gravity value) from Z-axis
-  // accelZ -= GRAVITY;
+  // Accelerometer angles
+  float accelPitch = atan2(a.acceleration.y, a.acceleration.z) * 180 / PI;
+  float accelRoll = atan2(-a.acceleration.x, a.acceleration.z) * 180 / PI;
 
-  // Convert raw accelerometer data to G-force
-   // Calculate the delta (change) in accelerometer readings
-  deltaX = accelX - prevAccelX;
-  deltaY = accelY - prevAccelY;
-  deltaZ = accelZ - prevAccelZ;
+  // Gyroscope integration
+  float deltaYaw = g.gyro.z * dt * yawScale;
+  float deltaPitch = g.gyro.x * dt;
+  float deltaRoll = g.gyro.y * dt;
 
-  // Smooth the delta values to avoid abrupt changes
-  deltaX = smooth(deltaX);
-  deltaY = smooth(deltaY);
-  deltaZ = smooth(deltaZ);
+  yaw += deltaYaw;
+  pitch += deltaPitch;
+  roll += deltaRoll;
 
-  // Send the delta values for controlling virtual object movement
- 
+  // Apply complementary filter
+  pitch = alphaRotation * pitch + (1 - alphaRotation) * accelPitch;
+  roll = alphaRotation * roll + (1 - alphaRotation) * accelRoll;
 
-  // Update the previous accelerometer values for next loop
-  prevAccelX = accelX;
-  prevAccelY = accelY;
-  prevAccelZ = accelZ;
+  // Prevent infinite yaw drift
+  if (abs(g.gyro.z) < 0.1) {  // If gyro Z is near zero, slow down yaw
+    yaw *= 0.98;
+  }
 
-  // Gyroscope data (angular velocity in degrees per second)
-  float gyroX = g.gyro.x * DEG_PER_S;  // Convert from radians/s to degrees/s
-  float gyroY = g.gyro.y * DEG_PER_S;
-  float gyroZ = g.gyro.z * DEG_PER_S;
+  // Keep yaw within -180 to 180 degrees
+  if (yaw > 180) yaw -= 360;
+  if (yaw < -180) yaw += 360;
 
-  // Calculate angles from accelerometer (using gravity to estimate orientation)
-  float accelAngleX = atan2(accelY, accelZ) * DEG_PER_S;  // Angle around X-axis
-  float accelAngleY = atan2(accelX, accelZ) * DEG_PER_S;  // Angle around Y-axis
-  float accelAngleZ = atan2(accelY, accelX) * DEG_PER_S;  // Angle around Z-axis 
-
- // Apply complementary filter for rotation angles
-  angleX = alphaR * (angleX + gyroX * (millis() - prevMillis) / 1000.0) + (1 - alphaR) * accelAngleX;
-  angleY = alphaR * (angleY + gyroY * (millis() - prevMillis) / 1000.0) + (1 - alphaR) * accelAngleY;
-  angleZ = alphaR * (angleZ + gyroZ * (millis() - prevMillis) / 1000.0) + (1 - alphaR) * accelAngleZ;
-  
-  deltaAngleX = angleX - prevAngleX;
-  deltaAngleY = angleY - prevAngleY;
-  deltaAngleZ = angleZ - prevAngleZ;
-
-  deltaAngleX = smooth(deltaAngleX);  
-  deltaAngleX = smooth(deltaAngleX);  
-  deltaAngleX = smooth(deltaAngleX);
-
-  prevAngleX = angleX;
-  prevAngleY = angleY;
-  prevAngleZ = angleZ;
 
   // Send data in CSV format
-  Serial.print(smoothedValue[0]); Serial.print(spliter);
-  Serial.print(smoothedValue[1]); Serial.print(spliter);
-  Serial.print(smoothedValue[2]); Serial.print(spliter);
-  Serial.print(smoothedValue[3]); Serial.print(spliter);
-  Serial.print(smoothedValue[4]); Serial.print("/");
-  
-   Serial.print(deltaX); Serial.print(spliter);
-  Serial.print(deltaY); Serial.print(spliter);
-  Serial.print(deltaZ); Serial.print("/");
-  Serial.print(angleX); Serial.print(spliter);
-  Serial.print(angleY); Serial.print(spliter);
-  Serial.println(angleZ);
+  Serial.print(smoothedValue[0]);
+  Serial.print(spliter);
+  Serial.print(smoothedValue[1]);
+  Serial.print(spliter);
+  Serial.print(smoothedValue[2]);
+  Serial.print(spliter);
+  Serial.print(smoothedValue[3]);
+  Serial.print(spliter);
+  Serial.print(smoothedValue[4]);
+  Serial.print("/");
 
-  prevMillis = millis();
-  delay(100); 
+  // Serial.print(posX);
+  // Serial.print(spliter);
+  // Serial.print(posY);
+  // Serial.print(spliter);
+  // Serial.print(posZ);
+  // Serial.print("/");
+
+  Serial.print(-pitch);
+  Serial.print(",");
+  Serial.print(-yaw);
+  Serial.print(",");
+  Serial.println(roll);
+
+  if (Serial.available() > 0) {
+    hapticFeedback = Serial.parseInt();  // Read the integer from Unity
+    // Simulate haptic feedback (Replace with actual motor control)
+    for (int i = 0; i < 5; i++) {
+      analogWrite(getOutPin(i), hapticFeedback);
+    }
+  }
 }
 
 int getPin(int finger) {
@@ -173,6 +174,17 @@ int getPin(int finger) {
     case 2: return MID_PIN;
     case 3: return RING_PIN;
     case 4: return PINKY_PIN;
+  }
+  return -1;
+}
+
+int getOutPin(int finger) {
+  switch (finger) {
+    case 0: return THUMB_OUT;
+    case 1: return INDEX_OUT;
+    case 2: return MID_OUT;
+    case 3: return RING_OUT;
+    case 4: return PINKY_OUT;
   }
   return -1;
 }
